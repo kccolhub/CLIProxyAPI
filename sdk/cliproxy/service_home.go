@@ -11,7 +11,6 @@ import (
 
 	internalconfig "github.com/router-for-me/CLIProxyAPI/v8/internal/config"
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/home"
-	"github.com/router-for-me/CLIProxyAPI/v8/internal/homeplugins"
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/logging"
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/redisqueue"
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/util"
@@ -175,21 +174,19 @@ func (s *Service) stageHomeOverlayWithClient(ctx context.Context, remoteCfg *con
 	logHomeConfigChanges(baseCfg, &merged)
 	report, syncKey, didSync, errSync := s.syncHomePluginsWithClient(ctx, &syncCfg, client)
 	if errSync != nil {
+		if strings.TrimSpace(merged.Home.NodeID) != "" && ctx.Err() == nil {
+			s.reportHomePluginStatusWithClient(ctx, &merged, report, client)
+		}
 		return nil, fmt.Errorf("sync home plugins: %w", errSync)
 	}
 	if errContext := ctx.Err(); errContext != nil {
 		return nil, errContext
 	}
-	if didSync {
-		if errLoad := homeplugins.MarkLoadResults(&report, s.pluginHost); errLoad != nil {
-			return nil, fmt.Errorf("load home plugins: %w", errLoad)
-		}
-	}
 	if strings.TrimSpace(report.Task) != "" {
 		work.syncKey = syncKey
 		work.markSynced = true
 		if strings.TrimSpace(merged.Home.NodeID) != "" {
-			work.statusWork = append(work.statusWork, homePluginStatusWork{cfg: &merged, report: report})
+			work.statusWork = append(work.statusWork, homePluginStatusWork{cfg: &merged, report: report, checkLoad: didSync})
 		}
 	}
 	taskWork, errTasks := s.stageHomePluginTasksWithClient(ctx, &merged, client)
@@ -726,6 +723,7 @@ func (s *Service) runHomeConfigWorkerWithSupervisor(lifetimeCtx, homeCtx context
 			return
 		}
 		if publish != nil {
+			startHomePluginPanel(lifetimeCtx, client, work.config.Port)
 			s.startHomeInFlightPublisher(lifetimeCtx, client, registry, supervisor)
 			s.startHomeUsageForwarder(lifetimeCtx, client)
 		}

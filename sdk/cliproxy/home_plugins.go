@@ -22,8 +22,9 @@ import (
 const homePluginStatusReportTimeout = 10 * time.Second
 
 type homePluginStatusWork struct {
-	cfg    *config.Config
-	report homeplugins.SyncReport
+	cfg       *config.Config
+	report    homeplugins.SyncReport
+	checkLoad bool
 }
 
 type homePluginTaskWork struct {
@@ -142,6 +143,14 @@ func (s *Service) pushHomePluginStatusWithClient(ctx context.Context, cfg *confi
 	}
 	report.NodeID = nodeID
 	report.UpdatedAt = time.Now().UTC()
+	// Preserve fetch failures in Home's per-plugin status table as well.
+	if !report.OK && len(report.Plugins) == 0 {
+		for id, item := range cfg.Plugins.Configs {
+			if item.Enabled != nil && *item.Enabled {
+				report.Plugins = append(report.Plugins, homeplugins.PluginInstallStatus{ID: id, InstallStatus: "failed", Error: report.Error})
+			}
+		}
+	}
 	raw, errMarshal := json.Marshal(report)
 	if errMarshal != nil {
 		return fmt.Errorf("marshal home plugin status: %w", errMarshal)
@@ -155,6 +164,32 @@ func (s *Service) pushHomePluginStatusWithClient(ctx context.Context, cfg *confi
 		return fmt.Errorf("push home plugin status: %w", errReport)
 	}
 	return nil
+}
+
+func startHomePluginPanel(ctx context.Context, client *home.Client, port int) {
+	if client == nil || port <= 0 {
+		return
+	}
+	go func() {
+		ticker := time.NewTicker(time.Minute)
+		defer ticker.Stop()
+		for {
+			registerCtx, cancel := context.WithTimeout(ctx, homePluginStatusReportTimeout)
+			errRegister := client.RegisterPluginPanel(registerCtx, port)
+			cancel()
+			if ctx.Err() != nil {
+				return
+			}
+			if errRegister != nil {
+				log.WithError(errRegister).Warn("failed to register Home plugin panel")
+			}
+			select {
+			case <-ctx.Done():
+				return
+			case <-ticker.C:
+			}
+		}
+	}()
 }
 
 func (s *Service) processHomePluginTasks(ctx context.Context, cfg *config.Config) {
@@ -212,7 +247,16 @@ func (s *Service) finalizeHomePluginWork(ctx context.Context, client *home.Clien
 		}
 	}
 	for work.nextStatus < len(work.statusWork) {
-		status := work.statusWork[work.nextStatus]
+		status := &work.statusWork[work.nextStatus]
+		// Runtime configuration loads the downloaded artifacts before finalization.
+		// A load failure is an observation to report, not a reason to block config
+		// commits forever (including a later disable, upgrade, or uninstall).
+		if status.checkLoad {
+			if errLoad := homeplugins.MarkLoadResults(&status.report, s.pluginHost); errLoad != nil {
+				log.WithError(errLoad).Warn("home plugin load failed")
+			}
+			status.checkLoad = false
+		}
 		if errReport := s.pushHomePluginStatusWithClient(ctx, status.cfg, status.report, client); errReport != nil {
 			return errReport
 		}

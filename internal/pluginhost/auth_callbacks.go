@@ -51,6 +51,9 @@ func (h *Host) currentAuthManager() *coreauth.Manager {
 }
 
 func (h *Host) callHostAuthList(ctx context.Context, request []byte) ([]byte, error) {
+	if raw, handled, errRead := h.homeAuthCallback(ctx, "list", ""); handled {
+		return raw, errRead
+	}
 	_ = ctx
 	if len(bytesTrimSpace(request)) > 0 {
 		var req map[string]any
@@ -74,6 +77,9 @@ func (h *Host) callHostAuthGet(ctx context.Context, request []byte) ([]byte, err
 	authIndex := strings.TrimSpace(req.AuthIndex)
 	if authIndex == "" {
 		return nil, fmt.Errorf("auth_index is required")
+	}
+	if raw, handled, errRead := h.homeAuthCallback(ctx, "get", authIndex); handled {
+		return raw, errRead
 	}
 	auth, rawJSON, errGet := h.authPhysicalJSONByIndex(authIndex)
 	if errGet != nil {

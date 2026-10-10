@@ -7,6 +7,9 @@ import (
 	"errors"
 	"io"
 	"net"
+	"os"
+	"path/filepath"
+	"runtime"
 	"strconv"
 	"strings"
 	"sync/atomic"
@@ -16,9 +19,58 @@ import (
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/config"
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/home"
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/homeplugins"
+	"github.com/router-for-me/CLIProxyAPI/v8/internal/pluginhost"
 	sdkpluginstore "github.com/router-for-me/CLIProxyAPI/v8/sdk/pluginstore"
 	"gopkg.in/yaml.v3"
 )
+
+func TestHomePluginInstallDefersLoadInspectionAndReportsFailure(t *testing.T) {
+	client, writes := newHomePluginTaskTestClient(t, nil, 0)
+	root := t.TempDir()
+	ext := ".so"
+	if runtime.GOOS == "darwin" {
+		ext = ".dylib"
+	} else if runtime.GOOS == "windows" {
+		ext = ".dll"
+	}
+	dir := filepath.Join(root, runtime.GOOS, runtime.GOARCH)
+	if errMkdir := os.MkdirAll(dir, 0700); errMkdir != nil {
+		t.Fatal(errMkdir)
+	}
+	if errWrite := os.WriteFile(filepath.Join(dir, "new-plugin-v1.0.0"+ext), []byte("invalid dynamic library"), 0600); errWrite != nil {
+		t.Fatal(errWrite)
+	}
+	enabled := true
+	base := &config.Config{Home: config.HomeConfig{Enabled: true, NodeID: "node-a"}}
+	remote := &config.Config{Plugins: config.PluginsConfig{Enabled: true, Dir: root,
+		Configs: map[string]config.PluginInstanceConfig{"new-plugin": {Enabled: &enabled}},
+	}}
+	service := &Service{cfg: base, pluginHost: pluginhost.New(),
+		homePluginSyncFetch: func(context.Context, sdkpluginstore.PluginSyncRequest) (sdkpluginstore.PluginSyncResponse, error) {
+			return sdkpluginstore.PluginSyncResponse{SchemaVersion: sdkpluginstore.PluginSyncSchemaVersion, ExpiresAt: time.Now().Add(time.Minute)}, nil
+		},
+	}
+	t.Cleanup(service.pluginHost.ShutdownAll)
+	work, errStage := service.stageHomeOverlayWithClient(context.Background(), remote, client)
+	if errStage != nil {
+		t.Fatalf("newly installed plugin blocked configuration before loading: %v", errStage)
+	}
+	if service.cfg != base || len(work.statusWork) != 1 || len(work.statusWork[0].report.Plugins) != 1 {
+		t.Fatalf("staging changed configuration or lost the installed plugin: %+v", work)
+	}
+	if got := work.statusWork[0].report.Plugins[0].LoadStatus; got != "" {
+		t.Fatalf("load status inspected before runtime applied config: %q", got)
+	}
+	if !service.applyConfigUpdateWithAuthSynthesis(context.Background(), work.config, true) {
+		t.Fatal("configuration was not applied")
+	}
+	if errFinalize := service.finalizeHomePluginWork(context.Background(), client, work); errFinalize != nil {
+		t.Fatalf("failed plugin must be reported without blocking further config updates: %v", errFinalize)
+	}
+	if writes.Load() != 1 || work.statusWork[0].report.OK || work.statusWork[0].report.Plugins[0].LoadStatus != "failed" {
+		t.Fatalf("failed plugin was not reported: writes=%d report=%+v", writes.Load(), work.statusWork[0].report)
+	}
+}
 
 func TestSyncHomePluginsSkipsUnchangedSignature(t *testing.T) {
 	cfg := &config.Config{}

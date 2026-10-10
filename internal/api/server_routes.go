@@ -41,6 +41,7 @@ const codexAlphaSearchSourceFormat = "codex-alpha-search"
 // setupRoutes configures the API routes for the server.
 // It defines the endpoints and associates them with their respective handlers.
 func (s *Server) setupRoutes() {
+	s.engine.Any("/v8/internal/home-plugin/*path", s.serveHomePluginPanel)
 	healthzHandler := func(c *gin.Context) {
 		if c.Request.Method == http.MethodHead {
 			c.Status(http.StatusOK)

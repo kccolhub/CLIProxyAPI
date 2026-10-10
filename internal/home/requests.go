@@ -3,6 +3,7 @@ package home
 import "time"
 
 type authDispatchRequest struct {
+	PluginID            string            `json:"plugin_id,omitempty"`
 	Type                string            `json:"type"`
 	Model               string            `json:"model"`
 	Count               int               `json:"count"`

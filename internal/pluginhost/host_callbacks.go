@@ -9,6 +9,7 @@ import (
 	"sync/atomic"
 
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/clienterror"
+	"github.com/router-for-me/CLIProxyAPI/v8/internal/home"
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/interfaces"
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/logging"
 	"github.com/router-for-me/CLIProxyAPI/v8/sdk/api/handlers"
@@ -419,6 +420,7 @@ func (h *Host) callHostModelExecute(ctx context.Context, request []byte) ([]byte
 	}
 	skipPluginID := h.callbackCallerPluginID(ctx, req.HostCallbackID)
 	ctx = h.resolveCallbackContext(req.HostCallbackID, ctx)
+	ctx = home.WithPluginCaller(ctx, skipPluginID)
 	resp, errMsg := executor.ExecuteModel(ctx, modelExecutionRequestFromPlugin(req.HostModelExecutionRequest, skipPluginID))
 	if errMsg != nil {
 		return nil, modelExecutionError(errMsg)

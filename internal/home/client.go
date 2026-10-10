@@ -181,15 +181,16 @@ type Client struct {
 	seedHost string
 	seedPort int
 
-	cmd         *redis.Client
-	cmdOptions  *redis.Options
-	sub         *redis.Client
-	release     *redis.Client
-	connections map[*homeDispatchConn]struct{}
-	closing     chan struct{}
-	lifecycle   config.CredentialConcurrencyConfig
-	limiter     atomic.Pointer[config.CredentialConcurrencyConfig]
-	managed     bool
+	cmd              *redis.Client
+	cmdOptions       *redis.Options
+	sub              *redis.Client
+	release          *redis.Client
+	connections      map[*homeDispatchConn]struct{}
+	closing          chan struct{}
+	lifecycle        config.CredentialConcurrencyConfig
+	limiter          atomic.Pointer[config.CredentialConcurrencyConfig]
+	managed          bool
+	pluginPanelToken string
 
 	heartbeatOK       atomic.Bool
 	dispatchFenced    atomic.Bool
@@ -1386,6 +1387,7 @@ func (c *Client) rPopAuth(ctx context.Context, requestedModel string, sessionID 
 	} else {
 		req = newAuthDispatchRequestWithRetryRound(requestedModel, sessionID, parentSessionID, headers, count, credentialPolicy, *retryRound, excludedAuthIDs, pinnedAuthID)
 	}
+	req.PluginID = pluginCaller(ctx)
 	keyBytes, errMarshal := json.Marshal(&req)
 	if errMarshal != nil {
 		return nil, errMarshal

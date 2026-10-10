@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"github.com/router-for-me/CLIProxyAPI/v8/internal/home"
 
 	"github.com/router-for-me/CLIProxyAPI/v8/sdk/pluginapi"
 )
@@ -25,6 +26,7 @@ func (h *Host) callHostModelExecuteStream(ctx context.Context, request []byte) (
 	}
 	skipPluginID := h.callbackCallerPluginID(ctx, req.HostCallbackID)
 	callbackCtx := h.resolveCallbackContext(req.HostCallbackID, ctx)
+	callbackCtx = home.WithPluginCaller(callbackCtx, skipPluginID)
 	if callbackCtx == nil {
 		callbackCtx = context.Background()
 	}
