@@ -6,6 +6,7 @@ import (
 	"crypto/subtle"
 	"encoding/json"
 	"fmt"
+	"net"
 )
 
 func (c *Client) ReadPluginAuth(ctx context.Context, pluginID, method, index string) ([]byte, error) {
@@ -27,12 +28,21 @@ func (c *Client) RegisterPluginPanel(ctx context.Context, port int) error {
 		c.pluginPanelToken = rand.Text() + rand.Text()
 	}
 	token := c.pluginPanelToken
+	address := ""
+	for connection := range c.connections {
+		if local, ok := connection.LocalAddr().(*net.TCPAddr); ok && local.IP != nil && !local.IP.IsUnspecified() {
+			address = local.IP.String()
+			break
+		}
+	}
 	c.mu.Unlock()
 	cmd, errClient := c.commandClient()
 	if errClient != nil {
 		return errClient
 	}
-	payload, _ := json.Marshal(map[string]any{"port": port, "token": token})
+	// The observed peer can be a cluster SNAT gateway. Advertise the actual
+	// local endpoint while Home retains the observed peer for liveness checks.
+	payload, _ := json.Marshal(map[string]any{"port": port, "token": token, "address": address})
 	return cmd.Do(ctx, "GET", "plugin-panel", string(payload)).Err()
 }
 
