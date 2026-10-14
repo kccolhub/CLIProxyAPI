@@ -22,9 +22,9 @@ import (
 const homePluginStatusReportTimeout = 10 * time.Second
 
 type homePluginStatusWork struct {
-	cfg       *config.Config
-	report    homeplugins.SyncReport
-	checkLoad bool
+	cfg              *config.Config
+	report           homeplugins.SyncReport
+	needsLoadMarking bool
 }
 
 type homePluginTaskWork struct {
@@ -248,14 +248,11 @@ func (s *Service) finalizeHomePluginWork(ctx context.Context, client *home.Clien
 	}
 	for work.nextStatus < len(work.statusWork) {
 		status := &work.statusWork[work.nextStatus]
-		// Runtime configuration loads the downloaded artifacts before finalization.
-		// A load failure is an observation to report, not a reason to block config
-		// commits forever (including a later disable, upgrade, or uninstall).
-		if status.checkLoad {
+		if status.needsLoadMarking {
 			if errLoad := homeplugins.MarkLoadResults(&status.report, s.pluginHost); errLoad != nil {
-				log.WithError(errLoad).Warn("home plugin load failed")
+				log.Warnf("failed to load home plugins: %v", errLoad)
 			}
-			status.checkLoad = false
+			status.needsLoadMarking = false
 		}
 		if errReport := s.pushHomePluginStatusWithClient(ctx, status.cfg, status.report, client); errReport != nil {
 			return errReport

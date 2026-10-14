@@ -100,6 +100,23 @@ func (q *homeConfigWorkQueue) dequeue(ctx context.Context) ([]byte, bool) {
 	}
 }
 
+func (q *homeConfigWorkQueue) tryDequeueLatest() ([]byte, bool) {
+	if q == nil {
+		return nil, false
+	}
+	q.mu.Lock()
+	defer q.mu.Unlock()
+	if len(q.items) == 0 {
+		return nil, false
+	}
+	item := q.items[len(q.items)-1]
+	for index := range q.items {
+		q.items[index] = nil
+	}
+	q.items = nil
+	return item, true
+}
+
 type homeLogForwarder interface {
 	Bind(*home.Client)
 	Deactivate(*home.Client)
@@ -186,7 +203,11 @@ func (s *Service) stageHomeOverlayWithClient(ctx context.Context, remoteCfg *con
 		work.syncKey = syncKey
 		work.markSynced = true
 		if strings.TrimSpace(merged.Home.NodeID) != "" {
-			work.statusWork = append(work.statusWork, homePluginStatusWork{cfg: &merged, report: report, checkLoad: didSync})
+			work.statusWork = append(work.statusWork, homePluginStatusWork{
+				cfg:              &merged,
+				report:           report,
+				needsLoadMarking: didSync,
+			})
 		}
 	}
 	taskWork, errTasks := s.stageHomePluginTasksWithClient(ctx, &merged, client)
@@ -677,6 +698,9 @@ func (s *Service) runHomeConfigWorkerWithSupervisor(lifetimeCtx, homeCtx context
 			log.WithError(errParse).Warn("failed to stage home config; retrying")
 			if !waitForHomeSubscriberRetry(lifetimeCtx, homeSubscriberPreAckRetryBackoff) {
 				return
+			}
+			if latest, okLatest := queue.tryDequeueLatest(); okLatest {
+				raw = latest
 			}
 		}
 

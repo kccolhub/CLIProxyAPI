@@ -1361,6 +1361,79 @@ func TestInterceptRequestAfterAuthPassesTargetFormat(t *testing.T) {
 	}
 }
 
+func TestInterceptRequestPropagatesPath_Issue6196(t *testing.T) {
+	host := newHostWithRecords(capabilityRecord{
+		id: "path-rewriter",
+		plugin: pluginapi.Plugin{Capabilities: pluginapi.Capabilities{
+			RequestInterceptor: requestInterceptorFunc(func(ctx context.Context, req pluginapi.RequestInterceptRequest) (pluginapi.RequestInterceptResponse, error) {
+				return pluginapi.RequestInterceptResponse{
+					Path: "/v1/images/generations",
+					Body: []byte(`{"model":"gpt-image-2.5"}`),
+				}, nil
+			}),
+		}},
+	})
+
+	got := host.InterceptRequestAfterAuth(context.Background(), pluginapi.RequestInterceptRequest{
+		SourceFormat: "openai-image",
+		Model:        "gpt-image-2.5",
+		Body:         []byte(`{"model":"gpt-image-2.5"}`),
+	})
+
+	if got.Path != "/v1/images/generations" {
+		t.Fatalf("got.Path = %q, want /v1/images/generations", got.Path)
+	}
+	if string(got.Body) != `{"model":"gpt-image-2.5"}` {
+		t.Fatalf("got.Body = %s, want expected body", string(got.Body))
+	}
+}
+
+func TestInterceptRequestPropagatesPathAcrossPluginChain_Issue6196(t *testing.T) {
+	var secondPluginSeenPath any
+	host := newHostWithRecords(
+		capabilityRecord{
+			id:       "first-path-rewriter",
+			priority: 20,
+			plugin: pluginapi.Plugin{Capabilities: pluginapi.Capabilities{
+				RequestInterceptor: requestInterceptorFunc(func(ctx context.Context, req pluginapi.RequestInterceptRequest) (pluginapi.RequestInterceptResponse, error) {
+					return pluginapi.RequestInterceptResponse{
+						Path: "/v1/images/generations",
+						Body: []byte(`{"model":"gpt-image-2.5","rewritten":true}`),
+					}, nil
+				}),
+			}},
+		},
+		capabilityRecord{
+			id:       "second-downstream-observer",
+			priority: 10,
+			plugin: pluginapi.Plugin{Capabilities: pluginapi.Capabilities{
+				RequestInterceptor: requestInterceptorFunc(func(ctx context.Context, req pluginapi.RequestInterceptRequest) (pluginapi.RequestInterceptResponse, error) {
+					if req.Metadata != nil {
+						secondPluginSeenPath = req.Metadata[coreexecutor.RequestPathMetadataKey]
+					}
+					return pluginapi.RequestInterceptResponse{}, nil
+				}),
+			}},
+		},
+	)
+
+	got := host.InterceptRequestAfterAuth(context.Background(), pluginapi.RequestInterceptRequest{
+		SourceFormat: "openai-image",
+		Model:        "gpt-image-2.5",
+		Body:         []byte(`{"model":"gpt-image-2.5"}`),
+		Metadata: map[string]any{
+			coreexecutor.RequestPathMetadataKey: "/v1/images/edits",
+		},
+	})
+
+	if got.Path != "/v1/images/generations" {
+		t.Fatalf("got.Path = %q, want /v1/images/generations", got.Path)
+	}
+	if secondPluginSeenPath != "/v1/images/generations" {
+		t.Fatalf("second plugin saw path = %v, want /v1/images/generations", secondPluginSeenPath)
+	}
+}
+
 func TestInterceptorsSkipExceptedPlugin(t *testing.T) {
 	originCalls := 0
 	otherCalls := 0
@@ -2931,6 +3004,37 @@ func TestAccessAdapterAuthenticateFailures(t *testing.T) {
 				}
 			}
 		})
+	}
+}
+
+func TestAccessAdapterAuthenticateMaxBytesErrorReturns413(t *testing.T) {
+	host := New()
+	called := false
+	adapter := newAccessAdapterForTest(host, "auth-plugin", frontendAuthProviderFunc{
+		identifier: "custom-auth",
+		authenticate: func(ctx context.Context, req pluginapi.FrontendAuthRequest) (pluginapi.FrontendAuthResponse, error) {
+			called = true
+			return pluginapi.FrontendAuthResponse{Authenticated: true}, nil
+		},
+	})
+	limitedBody := http.MaxBytesReader(nil, io.NopCloser(strings.NewReader("0123456789")), 4)
+	req, errNewRequest := http.NewRequest(http.MethodPost, "http://example.test/v1/chat", limitedBody)
+	if errNewRequest != nil {
+		t.Fatalf("NewRequest() error = %v", errNewRequest)
+	}
+
+	result, authErr := adapter.Authenticate(context.Background(), req)
+	if result != nil {
+		t.Fatalf("Authenticate() result = %#v, want nil", result)
+	}
+	if authErr == nil {
+		t.Fatal("Authenticate() error = nil, want 413 auth error")
+	}
+	if got := authErr.HTTPStatusCode(); got != http.StatusRequestEntityTooLarge {
+		t.Fatalf("Authenticate() status = %d, want %d (err=%v)", got, http.StatusRequestEntityTooLarge, authErr)
+	}
+	if called {
+		t.Fatal("provider Authenticate() was called despite oversized request body")
 	}
 }
 
